@@ -25,7 +25,7 @@ class DensityPeaksClustering {
         int *rho;
         int *nearest;
         int *gamma_index;
-        int *categoty;
+        int *category;
         int *center;
         int *center_index;
         int *rho_index_sorted;
@@ -53,7 +53,6 @@ class DensityPeaksClustering {
 float **file_read(char *filename, int *numObjs, int *numCoords) {
     float **objects;
     int i, j, len;
-    ssize_t numBytesRead;
 
     /* input file is in ASCII format */
     FILE *infile;
@@ -137,7 +136,7 @@ int file_write(char *filename, int numClusters, int numObjs, int numCoords, floa
     char outFileName[1024];
 
     /* output: the coordinates of the cluster centres ----------------------*/
-    sprintf(outFileName, "%s.cluster_centers", filename);
+    sprintf(outFileName, "%s.centers", filename);
     fptr = fopen(outFileName, "w");
     for (i = 0; i < numClusters; i++)
     {
@@ -168,7 +167,7 @@ DensityPeaksClustering::DensityPeaksClustering(int numObjs, int numCoords, int n
     this->rho = (int*)malloc(sizeof(int) * numObjs);
     this->nearest = (int*)malloc(sizeof(int) * numObjs);
     this->gamma_index = (int*)malloc(sizeof(int) * numObjs);
-    this->categoty = (int*)malloc(sizeof(int) * numObjs);
+    this->category = (int*)malloc(sizeof(int) * numObjs);
     this->center = (int*)malloc(sizeof(int) * numObjs);
     this->center_index = (int*)malloc(sizeof(int) * numClusters);
     this->rho_index_sorted = (int*)malloc(sizeof(int) * numObjs);
@@ -191,7 +190,7 @@ DensityPeaksClustering::~DensityPeaksClustering() {
     free(rho);
     free(nearest);
     free(gamma_index);
-    free(categoty);
+    free(category);
     free(center);
     free(center_index);
     free(rho_index_sorted);
@@ -351,7 +350,7 @@ void DensityPeaksClustering::fit() {
         int i = gamma_index[seq];
         if (seq >= numClusters)
             break;
-        categoty[i] = current_category;
+        category[i] = current_category;
         center[i] = current_category;
         center_index[seq] = i;
         for (int j = 0; j < numCoords; j++) {
@@ -363,8 +362,8 @@ void DensityPeaksClustering::fit() {
     // 因为要按密度从大到小赋予类别，因此这里不能并行
     for (int seq = 0; seq < numObjs; seq ++) {
         int i = rho_index_sorted[seq];
-        if (categoty[i] == 0)
-            categoty[i] = categoty[nearest[i]];
+        if (category[i] == 0)
+            category[i] = category[nearest[i]];
     }
 }
 
@@ -413,14 +412,14 @@ int main(int argc, char **argv) {
     dpc.fit();
     double end = omp_get_wtime();
 
-    printf("\n===== DesintyPeaksClustering (sequential version) =====\n");
+    printf("\n===== DensityPeaksClustering (OpenMP version) =====\n");
 
     printf("Input file:       %s\n", filename);
     printf("numObjs         = %d\n", dpc.numObjs);
     printf("numCoords       = %d\n", dpc.numCoords);
     printf("numClusters     = %d\n", dpc.numClusters);
     printf("threshold d_c   = %.4f\n", dpc.d_c);
-    printf("clustering time = %.4f sec\n", end - start);
+    printf("clustering time = %.4f milliseconds\n", (end - start) * 1000.0);
     printf("\n===== clustering centers =====\n");
     for (int i = 0; i < numClusters; i++) {
         printf("clustering centers %d: ", i);
@@ -431,8 +430,7 @@ int main(int argc, char **argv) {
     }
 
     /* output: the coordinates of the cluster centres */
-    file_write(filename, numClusters, numObjs, numCoords, dpc.clusters, dpc.categoty);
+    file_write(filename, numClusters, numObjs, numCoords, dpc.clusters, dpc.category);
 
     return 0;
 }
-
