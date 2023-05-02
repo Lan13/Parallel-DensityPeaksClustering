@@ -9,19 +9,33 @@ This work is inspired by serban's kmeans [serban/kmeans: A CUDA implementation o
 
 `cat.txt`: origin dataset with 31 clusters (3100 data elements copied to 40300)
 
-`catn.txt`: dataset proprocess by minmaxscaler (min-max normalization)
+`catn.txt`: dataset preprocess by minmaxscaler (min-max normalization)
 
 
 
-Here's some sample benchmark output for the dataset on an Intel(R) Xeon(R) Gold 6154 CPU @ 3.00GHz machine with an NVIDIA GeForce RTX 2080 Ti card. 
+Here's usage:
 
 ```
-===================== DensityPeaksClustering ========================
----------------------------------------------------------------------
-seqTime = 59701.8310ms  ompTime = 34327.7565ms  speedup = 1.73x
-seqTime = 59701.8310ms  cudaTime = 2780.1560ms  speedup = 21.47x
-seqTime = 59701.8310ms  cuda2Time = 558.1675ms  speedup = 106.96x
----------------------------------------------------------------------
+"Usage: %s [switches] -i filename -n num_clusters\n"
+        "       -i filename    : file containing data to be clustered\n"
+        "       -n num_clusters: number of clusters (K must > 1)\n"
+        "       -t d_c         : d_c value (default %.4f)\n"
+        "       -h             : print this help information\n";
+```
+
+
+
+Here's some sample benchmark output for the dataset on an Intel(R) Xeon(R) Gold 6154 CPU @ 3.00GHz machine with an NVIDIA GeForce RTX 2080 Ti card. (Run the benchmark.sh)
+
+```
+========================== DensityPeaksClustering =============================
+-------------------------------------------------------------------------------
+seqTime = 60223.2270ms  ompTime = 34686.8233ms  speedup = 1.73x  (OpenMP Version)
+seqTime = 60223.2270ms  cudaTime = 2817.4399ms  speedup = 21.37x  (Cuda Version)
+seqTime = 60223.2270ms  cuda2Time = 548.6615ms  speedup = 109.76x  (Optimized Version)
+seqTime = 60223.2270ms  cuda3Time = 632.3199ms  speedup = 95.24x  (Texture Version)
+seqTime = 60223.2270ms  cuda4Time = 424.3925ms  speedup = 141.90x  (Shared Version)
+-------------------------------------------------------------------------------
 ```
 
 
