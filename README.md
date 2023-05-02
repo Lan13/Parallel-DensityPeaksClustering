@@ -11,6 +11,8 @@ This work is inspired by serban's kmeans [serban/kmeans: A CUDA implementation o
 
 `catn.txt`: dataset preprocess by minmaxscaler (min-max normalization)
 
+**The dimension of this dataset is 2 for easy visualization, if your dataset is not, then you need to modify part of codes.**
+
 
 
 Here's usage:
