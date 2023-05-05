@@ -254,7 +254,154 @@ void DensityPeaksClustering::get_distance() {
 
 但是由于 OpenMP 有限的并行化功能，它的目的是为了提高程序的运行效率和可扩展性，而不是为了实现所有的并行化需求。加上程序中涉及的只是大量独立的浮点数计算和数值比较，所以我们只能简单地使用 OpenMP 对其做一定程度的加速。对于算法中 $\rho$ 和 $\delta$ 部分的计算也是如此。
 
-### 5.3 CUDA 实现
+### 5.3 OpenMP 并行排序
+
+在本次程序中还有 `argsort` 进行排序，这个很显然也可以进行并行优化。`argsort` 的并行排序优化主要是基于并行正则采样排序 (Parallel Sorting by Regular Sampling) 实现，这部分的内容其实在排序的实验中我们就做过了。这个算法是可以在共享存储模型进行的，因此可以使用 OpenMP 实现，当然个人觉得这个算法更适合使用 MPI 实现。该算法的主要步骤为 (假设有 $p$ 个线程)：
+
+1. 均匀划分，将数据按进程数均匀划分成 $p$ 段，每个进程 $p_i$ 分别处理相应那一段
+
+2. 局部排序，每个进程 $p_i$ 调用串行排序算法进行排序
+
+3. 选择样本，从其有序子数组中选取 $p$ 个样本
+
+4. 样本排序，用一个进程对 $p^2$ 个样本元素进行串行排序
+
+5. 选择主元，用一个进程从排好序的样本序列中选择 $p-1$ 个主元，并且传播给其它 $p_i$
+
+   ```cpp
+   void regularSample(float *arr, float *samples, float *pivots) {
+   	int stride = SIZE / (SAMPLE_SIZE * NUM_THREADS);
+   	// 正则采样
+   	#pragma omp parallel num_threads(NUM_THREADS) shared(arr, samples) 
+   	{
+   		int tid = omp_get_thread_num();
+   		// 记录不同处理器采样后放入的起始位置
+   		int thread_sample_index = tid * SAMPLE_SIZE;
+   		// 记录不同处理器采样前从arr中取出数据的位置
+   		int thread_arr_index = tid * SAMPLE_SIZE * stride;
+   		for (int i = 0; i < SAMPLE_SIZE; i++) {
+   			int sample_index = i + thread_sample_index;
+   			int arr_index = i * stride + thread_arr_index;
+   			samples[sample_index] = arr[arr_index];
+   		}
+   	#pragma omp barrier
+   	}
+   	// 采样排序
+   	mergeSort(samples, 0, SAMPLE_SIZE * NUM_THREADS - 1);
+   	// 选择主元
+   	for (int i = 0; i < NUM_THREADS - 1; i++) {
+   		int pivot_index = (i + 1) * SAMPLE_SIZE;
+   		pivots[i] = samples[pivot_index];
+   	}
+   	return;
+   }
+   ```
+
+6. 主元划分，$p_i$ 按主元将自己那一部分的有序段划分成 $p$ 段
+
+7. 全局交换，各线程 $p_i$ 将有序段按段号交换到对应的处理器中
+
+   ```cpp
+   float* pivotPartition(float *arr, float *pivots, int *accumulate_counts, int *idx) {
+   	// 主元划分
+   	float* arr_change = (float*)malloc(sizeof(float) * SIZE);
+   	int* idx_change = (int*)malloc(sizeof(int) * SIZE);
+   	int **lens = (int**)malloc(sizeof(int*) * NUM_THREADS);
+   	for (int i = 0; i < NUM_THREADS; i++) {
+   		lens[i] = (int*)malloc(sizeof(int) * NUM_THREADS);
+   	}
+   	int* counts = (int*)malloc(sizeof(int) * NUM_THREADS);
+   	memset(counts, 0, sizeof(int) * NUM_THREADS);
+   	#pragma omp parallel num_threads(NUM_THREADS) shared(arr, temp, lens, counts, accumulate_counts)
+   	{
+   		int tid = omp_get_thread_num();
+   		int stride = SIZE / NUM_THREADS;
+   		int l = tid * stride, r = (tid + 1) * stride - 1;
+   		int* partitions = (int*)malloc(sizeof(int) * (NUM_THREADS + 1));
+   		partitions[0] = l - 1;
+   		for (int i = 1; i < NUM_THREADS + 1; i++)
+   			partitions[i] = r;
+   		// 主元划分
+   		int ll = l;
+   		for (int i = 0; i < NUM_THREADS - 1; i++) {
+   			for (int j = ll; j <= r; j++) {
+   				if (arr[j] > pivots[i]) {
+   					partitions[i + 1] = j - 1;
+   					ll = j;
+   					break;
+   				}
+   			}
+   		}
+   		// 这一段程序的目的是为了计算交换后的地址索引，注意这一块需要同步路障
+   		lens[tid][NUM_THREADS - 1] = r - ll + 1;
+   		for (int i = 0; i < NUM_THREADS; i++) {
+   			lens[tid][i] = partitions[i + 1] - partitions[i];
+   		}
+   		#pragma omp barrier
+   		for (int i = 0; i < NUM_THREADS; i++) {
+   			counts[tid] += lens[i][tid];
+   		}
+   		#pragma omp barrier
+   		for (int i = 0; i <= tid; i++) {
+   			accumulate_counts[tid] += counts[i];
+   		}
+   		#pragma omp barrier
+   		// 这一段程序的目的是为了计算交换后的地址索引
+   		// 全局交换
+   		for (int i = 0; i < NUM_THREADS; i++) {
+   			int dest_index = (i == 0) ? 0 : accumulate_counts[i - 1];
+   			for (int ii = 0; ii < tid; ii++) {
+   				dest_index += lens[ii][i];
+   			}
+   			for (int j = partitions[i] + 1, k = 0; j <= partitions[i + 1]; j++, k++) {
+   				arr_change[dest_index + k] = arr[j];
+   				idx_change[dest_index + k] = idx[j];
+   			}
+   		}
+   	}
+   	for (int i = 0; i < SIZE; i++)
+   		idx[i] = idx_change[i];
+   	return arr_change;
+   }
+   ```
+
+8. 归并排序，各线程 $p_i$ 对接收到的元素进行归并排序
+
+   ```cpp
+   float* mergeSortParallel(float *arr, int *idx) {
+   	float* samples = (float*)malloc(sizeof(float) * SAMPLE_SIZE * NUM_THREADS);
+   	float* pivots = (float*)malloc(sizeof(float) * (NUM_THREADS - 1));
+   	int* accumulate_counts = (int*)malloc(sizeof(int) * NUM_THREADS);
+   	memset(accumulate_counts, 0, sizeof(int) * NUM_THREADS);
+   	omp_set_num_threads(NUM_THREADS);
+   	// 均匀划分且局部排序
+   	#pragma omp parallel num_threads(NUM_THREADS) shared(arr)
+   	{
+   		int tid = omp_get_thread_num();
+   		int stride = SIZE / NUM_THREADS;
+   		int l = tid * stride, r = (tid + 1) * stride - 1;
+   		mergeSort(arr, l, r, idx);
+   	}
+   	#pragma omp barrier
+   	// 正则采样且采样排序且选择主元
+   	regularSample(arr, samples, pivots);
+   	#pragma omp barrier
+   	// 主元划分且全局交换
+   	arr = pivotPartition(arr, pivots, accumulate_counts, idx);
+   	#pragma omp barrier
+   	// 归并排序
+   	#pragma omp parallel num_threads(NUM_THREADS) shared(arr)
+   	{
+   		int tid = omp_get_thread_num();
+   		int stride = SIZE / NUM_THREADS;
+   		int l = (tid == 0) ? 0 : accumulate_counts[tid - 1], r = accumulate_counts[tid] - 1;
+   		mergeSort(arr, l, r, idx);
+   	}
+   	return arr;
+   }
+   ```
+
+### 5.4 CUDA 实现
 
 在使用 CUDA 实现上述算法的时候，由于 CUDA 涉及设备端和主机端数据的移动，因此我们不再使用 `DensityPeaksClustering` 类对这些变量进行封装。而是只对需要在 GPU 中计算的数据分配 GPU 空间，而最后算法计算出来的数据就分配在主机端，这样就可以减少数据移动之间的开销。
 
@@ -290,7 +437,7 @@ __global__ void get_gamma(int numObjs, int *rho, float *delta, float *gamma) {
 }
 ```
 
-### 5.4 CUDA 优化
+### 5.5 CUDA 优化
 
 在上面实现时采用了单 block 多 threads 的方法进行并行。为了最大程度的并行加速我们的代码，我们将其设置为多 blocks 多 threads 的方式进行并行加速。同时可以看出，在函数 `get_delta()` 中有非必要的内存分配操作，可以将这段代码删除：
 
@@ -322,7 +469,7 @@ for (int k = 0; k < seq; k++) {
 
 但是这个部分是不能采用规约的方式查找最小值，因为我们需要从密度高到低的顺序进行处理，而这个密度高到低顺序的数据的内存分布不是连续的，因此无法采用规约的方式进行查找。
 
-### 5.5 CUDA 纹理存储
+### 5.6 CUDA 纹理存储
 
 纹理存储是一种 CUDA 的高速缓存技术，用于加速从全局内存中读取数据的过程。使用纹理存储可以提高性能，减少内存访问的延迟，提高内存访问的带宽，从而可以加速许多计算密集型应用程序。纹理存储使用了一些优化技术，如空间局部性和纹理缓存，以更好地缓存数据。这些技术可以使访问纹理数据变得更加高效，从而提高应用程序的性能。在之前的分析，我们知道在 `get_distance()` 函数中存在大量重复访问全局内存的行为，尽管我们采取了对称化的处理方式，还是避免不了这些重复访存的行为，其具体表现如下：
 
@@ -393,7 +540,7 @@ __global__ void get_distance(int numCoords, int numObjs, cudaTextureObject_t tex
 }
 ```
 
-### 5.6 CUDA 共享内存
+### 5.7 CUDA 共享内存
 
 共享内存是专门为GPU设计的一种内存类型，因此它可以通过硬件优化来提高访问速度。例如，共享内存可以使用硬件缓存和存储器结构进行更有效的访问。共享内存是在块内部共享的，可以被块内的所有线程并发访问，可以快速进行同步和通信操作。它可以避免重复从全局内存中读取数据。这种数据复用可以减少数据访问的延迟和带宽，从而提高应用程序的性能。
 
@@ -491,24 +638,23 @@ for (int i = x; i < numObjs; i += blockDim.x * blockDim.y * gridDim.x * gridDim.
 
 可以看出，如果对内循环进行并行的话，其性能也会有一定程度的提高。但是内循环是有一段同步写的问题，如果不对它进行保护的话，不同线程对其同时写入的时候可能会发生异常的行为。对此我采用过 `atomicAdd()` 函数进行原子操作。但是使用后发现程序还是错误，因此我放弃了这个方法，同时也没有找到解决方案。
 
-同时，在本次程序中还有 `argsort` 进行排序，这个很显然也可以进行并行优化，但是由于 `argsort` 本身的复杂性，因此我未能实现并行方法。同时我也尝试过使用 `thrust::sort_by_key`，发现其性能没有 `std::sort` 快，因此最后还是使用 `std::sort` 完成 `argsort`，毕竟 `std::sort` 中本身就有很多优化处理。
-
 ## 7. 性能测试
 
-我通过编写一个脚本来一次性测试所有程序的性能，并且计算出加速比，可以得到运行结果如下（这是少有的服务器空闲的时候）：
+我通过编写一个脚本来一次性测试所有程序的性能，并且计算出加速比，可以得到运行结果如下：
 
 ```
 ========================== DensityPeaksClustering =============================
 -------------------------------------------------------------------------------
-seqTime = 60223.2270ms  ompTime = 34686.8233ms  speedup = 1.73x  (OpenMP Version)
-seqTime = 60223.2270ms  cudaTime = 2817.4399ms  speedup = 21.37x  (Cuda Version)
-seqTime = 60223.2270ms  cuda2Time = 548.6615ms  speedup = 109.76x  (Optimized Version)
-seqTime = 60223.2270ms  cuda3Time = 632.3199ms  speedup = 95.24x  (Texture Version)
-seqTime = 60223.2270ms  cuda4Time = 424.3925ms  speedup = 141.90x  (Shared Version)
+seqTime = 58581.9130ms  ompTime = 37975.4223ms  speedup = 1.54x  (OpenMP Version)
+seqTime = 58581.9130ms  omp2Time = 36567.8964ms  speedup = 1.60x  (Argsort Version)
+seqTime = 58581.9130ms  cudaTime = 2838.2395ms  speedup = 20.64x  (Cuda Version)
+seqTime = 58581.9130ms  cuda2Time = 548.4465ms  speedup = 106.81x  (Optimized Version)
+seqTime = 58581.9130ms  cuda3Time = 631.6838ms  speedup = 92.73x  (Texture Version)
+seqTime = 58581.9130ms  cuda4Time = 423.0862ms  speedup = 138.46x  (Shared Version)
 -------------------------------------------------------------------------------
 ```
 
-可以看到，由于 OpenMP 有限的并行功能，所以其加速比并不是很高。而只使用了一个块的 CUDA 程序的加速比也是比较不错的。对于整体优化后的 CUDA 程序，其加速比也是非常的高，充分体现出了 GPU 的浮点计算能力和并行处理的能力。而纹理存储的程序加速比有所下降，因为纹理存储的访问方式更加复杂，并且在访问纹理内存时需要进行一些额外的计算，这些额外的计算包括纹理坐标的计算和插值等操作，以保证采样的精度和正确性，这些额外的计算会导致访问纹理内存的延迟和额外的开销，从而导致程序的执行效率降低。而共享内存的使用可以进一步提高程序的性能。但是由于我们已经处理过其计算的对称性了，因此共享内存的优化也是只能在一定程度上提高程序的性能。
+可以看到，由于 OpenMP 有限的并行功能，所以其加速比并不是很高。而采用并行化的 `argsort` 后，其性能优化的效果有限。不难得知，由于数据集的规模并不大，且在排序算法的时间复杂度为 $O(n\log n)$ 的情况下，其本身就可以近似成为线性时间。同时在并行化实现的过程，可以看到有一些额外的处理开销，所以其优化效果不明显也是很正常的现象。而只使用了一个块的 CUDA 程序的加速比也是比较不错的。对于整体优化后的 CUDA 程序，其加速比也是非常的高，充分体现出了 GPU 的浮点计算能力和并行处理的能力。而纹理存储的程序加速比有所下降，因为纹理存储的访问方式更加复杂，并且在访问纹理内存时需要进行一些额外的计算，这些额外的计算包括纹理坐标的计算和插值等操作，以保证采样的精度和正确性，这些额外的计算会导致访问纹理内存的延迟和额外的开销，从而导致程序的执行效率降低。而共享内存的使用可以进一步提高程序的性能。但是由于我们已经处理过其计算的对称性了，因此共享内存的优化也是只能在一定程度上提高程序的性能。
 
 同时我也使用了 Python 代码来运行这个数据集，发现运行了 20 分钟都没有得到结果，由此可以看到 CUDA 并行处理的强大。
 
@@ -518,4 +664,3 @@ seqTime = 60223.2270ms  cuda4Time = 424.3925ms  speedup = 141.90x  (Shared Versi
     <img src="./dataset.png" width="250"/>
 	<img src="./clusters.png" width="250"/>
 </center>
-
