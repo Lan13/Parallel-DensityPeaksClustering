@@ -32,11 +32,12 @@ Here's some sample benchmark output for the dataset on an Intel(R) Xeon(R) Gold 
 ```
 ========================== DensityPeaksClustering =============================
 -------------------------------------------------------------------------------
-seqTime = 60223.2270ms  ompTime = 34686.8233ms  speedup = 1.73x  (OpenMP Version)
-seqTime = 60223.2270ms  cudaTime = 2817.4399ms  speedup = 21.37x  (Cuda Version)
-seqTime = 60223.2270ms  cuda2Time = 548.6615ms  speedup = 109.76x  (Optimized Version)
-seqTime = 60223.2270ms  cuda3Time = 632.3199ms  speedup = 95.24x  (Texture Version)
-seqTime = 60223.2270ms  cuda4Time = 424.3925ms  speedup = 141.90x  (Shared Version)
+seqTime = 58581.9130ms  ompTime = 37975.4223ms  speedup = 1.54x  (OpenMP Version)
+seqTime = 58581.9130ms  omp2Time = 36567.8964ms  speedup = 1.60x  (Argsort Version)
+seqTime = 58581.9130ms  cudaTime = 2838.2395ms  speedup = 20.64x  (Cuda Version)
+seqTime = 58581.9130ms  cuda2Time = 548.4465ms  speedup = 106.81x  (Optimized Version)
+seqTime = 58581.9130ms  cuda3Time = 631.6838ms  speedup = 92.73x  (Texture Version)
+seqTime = 58581.9130ms  cuda4Time = 423.0862ms  speedup = 138.46x  (Shared Version)
 -------------------------------------------------------------------------------
 ```
 
